@@ -1,0 +1,178 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <errno.h>
+#include <time.h>
+#include <sys/time.h>
+#include <math.h>
+
+// Function to get current time in microseconds
+uint64_t get_microseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+
+// Binary search for a target uint64_t in a file using mmap
+int binary_search_uint64_mmap(const char *filepath, uint64_t target) {
+    int fd;
+    uint64_t *data;
+    struct stat st;
+    size_t num_elements;
+    int found = 0;
+    off_t target_offset = -1;
+    uint64_t start_time, end_time;
+    int total_comparisons = 0;
+    
+    // Start timing
+    start_time = get_microseconds();
+    
+    // Open the file
+    fd = open(filepath, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return -1;
+    }
+    
+    // Get file size
+    if (fstat(fd, &st) < 0) {
+        perror("fstat");
+        close(fd);
+        return -1;
+    }
+    
+    // Check if file size is valid for uint64_t array
+    if (st.st_size % sizeof(uint64_t) != 0) {
+        fprintf(stderr, "File size is not aligned with uint64_t size\n");
+        close(fd);
+        return -1;
+    }
+    
+    // Calculate number of elements
+    num_elements = st.st_size / sizeof(uint64_t);
+    if (num_elements == 0) {
+        fprintf(stderr, "File is empty\n");
+        close(fd);
+        return -1;
+    }
+    
+    printf("Searching for value %" PRIu64 " in file with %zu elements\n", target, num_elements);
+    
+    // Memory map the file
+    data = (uint64_t *)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (data == MAP_FAILED) {
+        perror("mmap");
+        close(fd);
+        return -1;
+    }
+    /*
+    int err = madvise(data, st.st_size, MADV_RANDOM);
+    if (err != 0) {
+        perror("madvise");
+        munmap(data, st.st_size);
+        close(fd);
+        return -1;
+    }*/
+    
+    // Perform binary search on the memory-mapped data
+    size_t lo = 0;
+    size_t hi = num_elements - 1;
+    
+    while (lo <= hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        total_comparisons++;
+        
+        if (data[mid] == target) {
+            found = 1;
+            target_offset = mid * sizeof(uint64_t);
+            break;
+        } else if (data[mid] < target) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    
+    // Clean up
+    munmap(data, st.st_size);
+    close(fd);
+    
+    // End timing
+    end_time = get_microseconds();
+    double elapsed_ms = (end_time - start_time) / 1000.0;
+    
+    if (found) {
+        printf("Found uint64_t value %" PRIu64 " at offset %lld (element index %lld)\n", 
+               target, (long long)target_offset, (long long)(target_offset / sizeof(uint64_t)));
+    } else {
+        printf("uint64_t value %" PRIu64 " not found in file\n", target);
+    }
+    
+    // Print timing information
+    printf("Search statistics (mmap):\n");
+    printf("  Total time: %.3f ms\n", elapsed_ms);
+    printf("  Total comparisons performed: %d\n", total_comparisons);
+
+    return found ? 0 : -1;
+}
+
+// Function to create a test file with sorted uint64_t values
+int create_test_file(const char *filepath, size_t num_elements, uint64_t step) {
+    FILE *file = fopen(filepath, "wb");
+    if (!file) {
+        perror("fopen");
+        return -1;
+    }
+    
+    printf("Creating test file with %zu elements...\n", num_elements);
+    
+    for (uint64_t i = 0; i < num_elements; i++) {
+        uint64_t value = i * step;
+        if (fwrite(&value, sizeof(uint64_t), 1, file) != 1) {
+            perror("fwrite");
+            fclose(file);
+            return -1;
+        }
+    }
+    
+    fclose(file);
+    printf("Test file created successfully: %s\n", filepath);
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <filepath> <target_uint64> [create_test size step]\n", argv[0]);
+        fprintf(stderr, "  create_test: If 'create_test' is specified, a test file will be created\n");
+        fprintf(stderr, "  size: Number of elements in the test file (default: 1000000)\n");
+        fprintf(stderr, "  step: Step between consecutive values (default: 10)\n");
+        return 1;
+    }
+    
+    const char *filepath = argv[1];
+    uint64_t target = strtoull(argv[2], NULL, 10);
+    
+    // Check for conversion errors
+    if (errno == ERANGE) {
+        perror("strtoull");
+        return 1;
+    }
+    
+    // Check if we should create a test file
+    if (argc >= 4 && strcmp(argv[3], "create_test") == 0) {
+        size_t size = (argc >= 5) ? strtoull(argv[4], NULL, 10) : 1000000;
+        uint64_t step = (argc >= 6) ? strtoull(argv[5], NULL, 10) : 10;
+        
+        if (create_test_file(filepath, size, step) != 0) {
+            return 1;
+        }
+    }
+    
+    return binary_search_uint64_mmap(filepath, target);
+}
