@@ -21,6 +21,7 @@ void print_usage(const char *program_name) {
     fprintf(stderr, "    -c: Create test file\n");
     fprintf(stderr, "    -s <size>: Number of elements in test file (default: 1000000)\n");
     fprintf(stderr, "    -p <step>: Step between values in test file (default: 10)\n");
+    fprintf(stderr, "    -d: Drop caches before running (requires sudo permissions)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -28,14 +29,15 @@ int main(int argc, char *argv[]) {
     int implementation = 0;
     int num_threads = 32;
     int create_test = 0;
+    int drop_caches = 0;
     size_t test_size = 1000000;
     uint64_t test_step = 10;
     int opt;
     const char *filepath = NULL;
     uint64_t target = 0;
-    
+
     // Parse command-line options
-    while ((opt = getopt(argc, argv, "i:t:cs:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "i:t:cs:p:d")) != -1) {
         switch (opt) {
             case 'i':
                 implementation = atoi(optarg);
@@ -63,6 +65,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'p':
                 test_step = strtoull(optarg, NULL, 10);
+                break;
+            case 'd':
+                drop_caches = 1;
                 break;
             default:
                 print_usage(argv[0]);
@@ -98,7 +103,18 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
     }
-    
+
+    // Drop caches if requested
+    if (drop_caches) {
+        printf("Dropping caches (requires sudo)...\n");
+        int status = system("sudo ./drop_caches.sh");
+        if (status != 0) {
+            fprintf(stderr, "Failed to drop caches. Make sure drop_caches.sh is executable and you have sudo permissions.\n");
+            return EXIT_FAILURE;
+        }
+        printf("Caches dropped successfully.\n");
+    }
+
     // Run the selected implementation
     switch (implementation) {
         case 1:
