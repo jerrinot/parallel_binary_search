@@ -12,6 +12,7 @@
 
 #define QUEUE_DEPTH 64       // How many operations we can queue at once
 #define PARALLEL_READS 4     // Number of speculative reads to perform
+#define BATCH_SIZE PARALLEL_READS  // Process this many completions at once
 #define BUFFER_SIZE (sizeof(uint64_t))
 
 typedef struct {
@@ -136,41 +137,43 @@ int binary_search_uint64(const char *filepath, uint64_t target) {
         // Count the reads we're performing
         total_reads += active_reads;
         
-        // Submit all read operations at once
-        ret = io_uring_submit(&ring);
+        // Submit and wait for all operations at once
+        ret = io_uring_submit_and_wait(&ring, active_reads);
         if (ret < 0) {
-            perror("io_uring_submit");
+            perror("io_uring_submit_and_wait");
             goto cleanup;
         }
-        
-        // Process results as they complete
-        for (int i = 0; i < active_reads; i++) {
-            ret = io_uring_wait_cqe(&ring, &cqe);
-            if (ret < 0) {
-                perror("io_uring_wait_cqe");
-                goto cleanup;
-            }
-            
+
+        // Process all completions in a batch
+        int head;
+        struct io_uring_cqe *cqes[BATCH_SIZE];
+        int count = io_uring_peek_batch_cqe(&ring, cqes, active_reads);
+
+        // Process the batch of completions
+        for (int i = 0; i < count; i++) {
+            cqe = cqes[i];
+
             // Get the read_data associated with this completion
             read_data *data = io_uring_cqe_get_data(cqe);
-            
+            if (!data) continue; // Skip if no data (shouldn't happen for these reads)
+
             // Check if operation succeeded
             if (cqe->res == sizeof(uint64_t)) {
                 data->valid = 1;
-                
+
                 // Compare with target
                 if (data->value == target) {
                     // Found it!
                     found = 1;
                     target_offset = data->offset;
-                } 
+                }
             } else if (cqe->res < 0) {
                 fprintf(stderr, "Read failed: %s\n", strerror(-cqe->res));
             }
-            
-            // Mark this CQE as seen
-            io_uring_cqe_seen(&ring, cqe);
         }
+
+        // Mark all CQEs as seen at once
+        io_uring_cq_advance(&ring, count);
         
         // If we found the target, we're done
         if (found) {
@@ -216,42 +219,45 @@ int binary_search_uint64(const char *filepath, uint64_t target) {
         if (lo == hi) {
             uint64_t value;
             off_t offset = lo * sizeof(uint64_t);
-            
+
             // Get an SQE for the final read
             sqe = io_uring_get_sqe(&ring);
             if (!sqe) {
                 fprintf(stderr, "Could not get SQE for final read\n");
                 goto cleanup;
             }
-            
+
             // Prepare the final read
             io_uring_prep_read(sqe, fd, &value, sizeof(uint64_t), offset);
             io_uring_sqe_set_data(sqe, NULL);
-            
+
             // Count this final read
             total_reads++;
-            
+
             // Submit and wait
-            ret = io_uring_submit(&ring);
+            ret = io_uring_submit_and_wait(&ring, 1);
             if (ret < 0) {
-                perror("io_uring_submit final read");
+                perror("io_uring_submit_and_wait final read");
                 goto cleanup;
             }
-            
-            ret = io_uring_wait_cqe(&ring, &cqe);
-            if (ret < 0) {
-                perror("io_uring_wait_cqe final read");
-                goto cleanup;
-            }
-            
-            if (cqe->res == sizeof(uint64_t)) {
-                if (value == target) {
-                    found = 1;
-                    target_offset = offset;
+
+            // Get the completion
+            struct io_uring_cqe *cqes[1];
+            int count = io_uring_peek_batch_cqe(&ring, cqes, 1);
+
+            if (count > 0) {
+                cqe = cqes[0];
+                if (cqe->res == sizeof(uint64_t)) {
+                    if (value == target) {
+                        found = 1;
+                        target_offset = offset;
+                    }
                 }
+
+                // Mark the CQE as seen
+                io_uring_cq_advance(&ring, 1);
             }
-            
-            io_uring_cqe_seen(&ring, cqe);
+
             break;  // We're done searching
         }
     }
