@@ -227,8 +227,6 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, 
             active_reads = 1;
         }
 
-        if (active_reads <= 0) active_reads = 1;  // Always read at least one value
-
         off_t step = range / (active_reads + 1);
         step = (step == 0) ? 1 : step;  // Ensure minimum step size
         
