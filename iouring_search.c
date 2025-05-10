@@ -10,11 +10,26 @@
 #include <sys/stat.h>
 #include <inttypes.h>
 #include <sys/uio.h>         // For struct iovec
+#include <linux/fs.h>        // For RWF_* flags
 
 #define QUEUE_DEPTH 64       // How many operations we can queue at once
 #define PARALLEL_READS 4     // Number of speculative reads to perform
 #define BATCH_SIZE PARALLEL_READS  // Process this many completions at once
 #define BUFFER_SIZE (sizeof(uint64_t))
+#define READAHEAD_THRESHOLD 512  // When range is smaller than this many elements, use readahead
+#define READAHEAD_SIZE (READAHEAD_THRESHOLD * sizeof(uint64_t)) // Size in bytes to readahead
+
+// When range is smaller than this, use linear search instead of continuing binary search
+// This threshold is chosen based on the tradeoff between:
+// - Cost of I/O operations (higher cost = higher threshold is better)
+// - Cost of in-memory scanning (higher cost = lower threshold is better)
+// - Cache line size considerations (typically 64 bytes)
+// For uint64_t values (8 bytes each), 32 elements = 256 bytes = 4 cache lines
+// Linear search is faster for small ranges because it:
+// 1. Reduces the number of I/O operations by reading all data at once
+// 2. Takes advantage of sequential memory access patterns
+// 3. Avoids the binary search overhead when the range is small
+#define LINEAR_SEARCH_THRESHOLD 0
 
 typedef struct {
     off_t offset;           // File offset for this read
@@ -24,7 +39,7 @@ typedef struct {
 } read_data;
 
 // Binary search for a target uint64_t in a file of sorted uint64_t values
-int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, int use_buffers) {
+int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, int use_buffers, int use_readahead) {
     struct io_uring ring;
     struct io_uring_sqe *sqe;
     struct io_uring_cqe *cqe;
@@ -149,7 +164,61 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, 
     while (lo <= hi) {
         // Calculate positions for parallel reads
         off_t range = hi - lo;
-        
+
+        // Check if the range is small enough for linear search and optimizations are enabled
+        if (use_readahead && range <= LINEAR_SEARCH_THRESHOLD) {
+            printf("Switching to linear search for range [%lld-%lld] (%lld elements)\n",
+                  (long long)lo, (long long)hi, (long long)(range + 1));
+
+            // Allocate buffer for the whole range
+            uint64_t *buffer = malloc((range + 1) * sizeof(uint64_t));
+            if (!buffer) {
+                perror("malloc for linear search buffer");
+                goto cleanup;
+            }
+
+            // Read the entire range at once
+            ssize_t bytes_read = pread(fd, buffer, (range + 1) * sizeof(uint64_t), lo * sizeof(uint64_t));
+            if (bytes_read < 0) {
+                perror("pread for linear search");
+                free(buffer);
+                goto cleanup;
+            }
+
+            // Linear scan through the buffer
+            for (off_t i = 0; i <= range; i++) {
+                if (buffer[i] == target) {
+                    found = 1;
+                    target_offset = (lo + i) * sizeof(uint64_t);
+                    printf("Linear search found target at index %lld\n", (long long)(lo + i));
+                    break;
+                }
+            }
+
+            // Clean up and break from the main loop
+            free(buffer);
+            break;
+        }
+
+        // Check if the range is small enough for readahead and readahead is enabled
+        if (use_readahead && range <= READAHEAD_THRESHOLD) {
+            // Small range - use posix_fadvise to prefetch the entire range
+            off_t readahead_offset = lo * sizeof(uint64_t);
+            size_t readahead_size = (range + 1) * sizeof(uint64_t);  // +1 to include both ends
+
+            // Use posix_fadvise with POSIX_FADV_WILLNEED to prefetch data
+            ret = posix_fadvise(fd, readahead_offset, readahead_size, POSIX_FADV_WILLNEED);
+            if (ret < 0) {
+                // Readahead failed - just continue with normal reads
+                // This is not critical, so we don't goto cleanup
+                perror("posix_fadvise readahead");
+            } else {
+                // Print diagnostic message
+                printf("Readahead issued for range [%lld-%lld] (%zu bytes)\n",
+                      (long long)lo, (long long)hi, readahead_size);
+            }
+        }
+
         // If range is small, reduce number of reads
         int active_reads;
         if (range > PARALLEL_READS * 100) {
@@ -158,9 +227,8 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, 
             active_reads = 1;
         }
 
-
         if (active_reads <= 0) active_reads = 1;  // Always read at least one value
-        
+
         off_t step = range / (active_reads + 1);
         step = (step == 0) ? 1 : step;  // Ensure minimum step size
         
