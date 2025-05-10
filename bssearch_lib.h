@@ -24,7 +24,7 @@ int compare_doubles(const void *a, const void *b);
 
 // Implementation interfaces
 int binary_search_uint64_mmap(const char *filepath, uint64_t target);
-int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll);
+int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, int use_buffers);
 int parallel_binary_search_uint64_mmap(const char *filepath, uint64_t target, int num_threads);
 
 #endif // BSSEARCH_LIB_H

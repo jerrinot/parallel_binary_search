@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <inttypes.h>
+#include <sys/uio.h>         // For struct iovec
 
 #define QUEUE_DEPTH 64       // How many operations we can queue at once
 #define PARALLEL_READS 4     // Number of speculative reads to perform
@@ -23,7 +24,7 @@ typedef struct {
 } read_data;
 
 // Binary search for a target uint64_t in a file of sorted uint64_t values
-int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll) {
+int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, int use_buffers) {
     struct io_uring ring;
     struct io_uring_sqe *sqe;
     struct io_uring_cqe *cqe;
@@ -33,6 +34,7 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll) 
     struct stat st;
     uint64_t start_time, end_time;
     int total_reads = 0;
+    int buffers_registered = 0;  // Track if buffers are registered
     
     // Open the file
     int fd = open(filepath, O_RDONLY);
@@ -119,6 +121,29 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll) 
     for (int i = 0; i < PARALLEL_READS; i++) {
         reads[i].valid = 0;
     }
+
+    // Register buffers if requested
+    if (use_buffers) {
+        // Prepare an array of iovec structures for buffer registration
+        struct iovec iov[PARALLEL_READS];
+
+        // Initialize each iovec to point to our read buffers
+        for (int i = 0; i < PARALLEL_READS; i++) {
+            iov[i].iov_base = &reads[i].value;
+            iov[i].iov_len = sizeof(uint64_t);
+        }
+
+        // Register the buffers with io_uring
+        ret = io_uring_register_buffers(&ring, iov, PARALLEL_READS);
+        if (ret < 0) {
+            printf("Note: Failed to register buffers with io_uring (error %d: %s)\n",
+                   errno, strerror(errno));
+            printf("Falling back to standard buffer mode...\n");
+        } else {
+            buffers_registered = 1;
+            printf("Buffer registration enabled (memory-to-kernel zero-copy)\n");
+        }
+    }
     
     // Main search loop
     while (lo <= hi) {
@@ -155,10 +180,17 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll) 
                 fprintf(stderr, "Could not get SQE\n");
                 goto cleanup;
             }
-            
-            // Prepare read operation
-            io_uring_prep_read(sqe, fd, &reads[i].value, sizeof(uint64_t), reads[i].offset);
-            
+
+            // Prepare read operation using registered buffers if available
+            if (buffers_registered) {
+                // Use fixed buffers for zero-copy I/O
+                io_uring_prep_read_fixed(sqe, fd, &reads[i].value, sizeof(uint64_t),
+                                        reads[i].offset, i);  // i is the buffer index
+            } else {
+                // Standard read
+                io_uring_prep_read(sqe, fd, &reads[i].value, sizeof(uint64_t), reads[i].offset);
+            }
+
             // Set user data to identify this request later
             io_uring_sqe_set_data(sqe, &reads[i]);
         }
@@ -256,7 +288,8 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll) 
                 goto cleanup;
             }
 
-            // Prepare the final read
+            // For the final read, we can't use registered buffers because it's a local variable
+            // rather than our registered read buffer array
             io_uring_prep_read(sqe, fd, &value, sizeof(uint64_t), offset);
             io_uring_sqe_set_data(sqe, NULL);
 
@@ -292,6 +325,11 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll) 
     }
     
 cleanup:
+    // Unregister buffers if they were registered
+    if (buffers_registered) {
+        io_uring_unregister_buffers(&ring);
+    }
+
     // Clean up io_uring
     io_uring_queue_exit(&ring);
     close(fd);
@@ -313,7 +351,9 @@ cleanup:
     printf("  Total reads performed: %d\n", total_reads);
     printf("  Average time per read: %.3f ms\n", elapsed_ms / total_reads);
     printf("  Total bytes read: %zu\n", total_reads * sizeof(uint64_t));
-    printf("  IO_uring mode: %s\n", sqpoll_enabled ? "SQPOLL (kernel polling)" : "Standard");
+    printf("  IO_uring mode: %s%s\n",
+           sqpoll_enabled ? "SQPOLL (kernel polling)" : "Standard",
+           buffers_registered ? " with buffer registration" : "");
 
     return found ? 0 : -1;
 }

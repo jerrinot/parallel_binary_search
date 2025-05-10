@@ -24,6 +24,7 @@ void print_usage(const char *program_name) {
     fprintf(stderr, "    -d: Drop caches before running (requires sudo permissions)\n");
     fprintf(stderr, "    -n <iterations>: Number of iterations to run (default: 1)\n");
     fprintf(stderr, "    -q: Use SQPOLL mode for IO_uring (requires root privileges, implementation 2 only)\n");
+    fprintf(stderr, "    -b: Use buffer registration for IO_uring (zero-copy I/O, implementation 2 only)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -40,7 +41,7 @@ void print_stats(const search_stats_t *stats, const char *impl_name) {
 }
 
 // Function to run a single search iteration and measure time
-int run_iteration(int implementation, const char *filepath, uint64_t target, int num_threads, int drop_caches, int use_sqpoll, double *duration) {
+int run_iteration(int implementation, const char *filepath, uint64_t target, int num_threads, int drop_caches, int use_sqpoll, int use_buffers, double *duration) {
     int ret = 0;
     uint64_t start_time, end_time;
 
@@ -62,7 +63,7 @@ int run_iteration(int implementation, const char *filepath, uint64_t target, int
             ret = binary_search_uint64_mmap(filepath, target);
             break;
         case 2:
-            ret = binary_search_uint64(filepath, target, use_sqpoll);
+            ret = binary_search_uint64(filepath, target, use_sqpoll, use_buffers);
             break;
         case 3:
             ret = parallel_binary_search_uint64_mmap(filepath, target, num_threads);
@@ -87,6 +88,7 @@ int main(int argc, char *argv[]) {
     int create_test = 0;
     int drop_caches = 0;
     int use_sqpoll = 0;  // Default to not using SQPOLL
+    int use_buffers = 0; // Default to not using buffer registration
     size_t test_size = 1000000;
     uint64_t test_step = 10;
     uint64_t iterations = 1;  // Default to 1 iteration
@@ -95,7 +97,7 @@ int main(int argc, char *argv[]) {
     uint64_t target = 0;
     
     // Parse command-line options
-    while ((opt = getopt(argc, argv, "i:t:cs:p:dn:q")) != -1) {
+    while ((opt = getopt(argc, argv, "i:t:cs:p:dn:qb")) != -1) {
         switch (opt) {
             case 'i':
                 implementation = atoi(optarg);
@@ -136,6 +138,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'q':
                 use_sqpoll = 1; // Enable SQPOLL mode for IO_uring
+                break;
+            case 'b':
+                use_buffers = 1; // Enable buffer registration for IO_uring
                 break;
             default:
                 print_usage(argv[0]);
@@ -180,7 +185,9 @@ int main(int argc, char *argv[]) {
             printf("Simple mmap\n");
             break;
         case 2:
-            printf("IO_uring%s\n", use_sqpoll ? " with SQPOLL" : "");
+            printf("IO_uring%s%s\n",
+                  use_sqpoll ? " with SQPOLL" : "",
+                  use_buffers ? " with buffer registration" : "");
             break;
         case 3:
             printf("Parallel mmap with %d threads\n", num_threads);
@@ -215,7 +222,7 @@ int main(int argc, char *argv[]) {
         
         // Run a single iteration
         double duration;
-        int iter_ret = run_iteration(implementation, filepath, target, num_threads, drop_caches, use_sqpoll, &duration);
+        int iter_ret = run_iteration(implementation, filepath, target, num_threads, drop_caches, use_sqpoll, use_buffers, &duration);
         
         // Store the duration
         durations[i] = duration;
