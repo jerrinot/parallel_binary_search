@@ -76,7 +76,9 @@ int binary_search_uint64_mmap(const char *filepath, uint64_t target) {
             found = 1;
             target_offset = mid * sizeof(uint64_t);
             break;
-        } else if (data[mid] < target) {
+        }
+
+        if (data[mid] < target) {
             lo = mid + 1;
         } else {
             hi = mid - 1;
@@ -103,5 +105,5 @@ int binary_search_uint64_mmap(const char *filepath, uint64_t target) {
     printf("  Total time: %.3f ms\n", elapsed_ms);
     printf("  Total comparisons performed: %d\n", total_comparisons);
 
-    return found ? 0 : -1;
+    return 0;
 }

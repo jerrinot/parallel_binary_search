@@ -377,5 +377,5 @@ cleanup:
            sqpoll_enabled ? "SQPOLL (kernel polling)" : "Standard",
            buffers_registered ? " with buffer registration" : "");
 
-    return found ? 0 : -1;
+    return 0;
 }

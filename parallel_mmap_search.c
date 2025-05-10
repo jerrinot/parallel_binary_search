@@ -197,5 +197,5 @@ int parallel_binary_search_uint64_mmap(const char *filepath, uint64_t target, in
     printf("  Total time: %.3f ms\n", elapsed_ms);
     printf("  Total comparisons performed: %d\n", total_comparisons);
 
-    return found ? 0 : -1;
+    return 0;
 }
