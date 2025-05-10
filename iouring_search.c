@@ -11,7 +11,7 @@
 #include <inttypes.h>
 
 #define QUEUE_DEPTH 64       // How many operations we can queue at once
-#define PARALLEL_READS 8     // Number of speculative reads to perform
+#define PARALLEL_READS 4     // Number of speculative reads to perform
 #define BUFFER_SIZE (sizeof(uint64_t))
 
 typedef struct {
