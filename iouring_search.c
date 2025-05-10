@@ -275,53 +275,9 @@ int binary_search_uint64(const char *filepath, uint64_t target, int use_sqpoll, 
         // Update boundaries for next iteration
         lo = new_lo;
         hi = new_hi;
-        
-        // If boundaries are the same and we haven't found it, do one direct read
-        if (lo == hi) {
-            uint64_t value;
-            off_t offset = lo * sizeof(uint64_t);
 
-            // Get an SQE for the final read
-            sqe = io_uring_get_sqe(&ring);
-            if (!sqe) {
-                fprintf(stderr, "Could not get SQE for final read\n");
-                goto cleanup;
-            }
-
-            // For the final read, we can't use registered buffers because it's a local variable
-            // rather than our registered read buffer array
-            io_uring_prep_read(sqe, fd, &value, sizeof(uint64_t), offset);
-            io_uring_sqe_set_data(sqe, NULL);
-
-            // Count this final read
-            total_reads++;
-
-            // Submit and wait
-            ret = io_uring_submit_and_wait(&ring, 1);
-            if (ret < 0) {
-                perror("io_uring_submit_and_wait final read");
-                goto cleanup;
-            }
-
-            // Get the completion
-            struct io_uring_cqe *cqes[1];
-            int count = io_uring_peek_batch_cqe(&ring, cqes, 1);
-
-            if (count > 0) {
-                cqe = cqes[0];
-                if (cqe->res == sizeof(uint64_t)) {
-                    if (value == target) {
-                        found = 1;
-                        target_offset = offset;
-                    }
-                }
-
-                // Mark the CQE as seen
-                io_uring_cq_advance(&ring, 1);
-            }
-
-            break;  // We're done searching
-        }
+        // When lo == hi, the next iteration will handle it correctly through the main loop
+        // with active_reads = 1, no special case needed
     }
     
 cleanup:
