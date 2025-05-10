@@ -1,5 +1,9 @@
 .idea
 cmake-build-*
 ts.d
+CMakeFiles
+CMakeCache.txt
+cmake_install.cmake
+Makefile
 
 **/.claude/settings.local.json
