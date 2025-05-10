@@ -22,7 +22,62 @@ void print_usage(const char *program_name) {
     fprintf(stderr, "    -s <size>: Number of elements in test file (default: 1000000)\n");
     fprintf(stderr, "    -p <step>: Step between values in test file (default: 10)\n");
     fprintf(stderr, "    -d: Drop caches before running (requires sudo permissions)\n");
+    fprintf(stderr, "    -n <iterations>: Number of iterations to run (default: 1)\n");
     exit(EXIT_FAILURE);
+}
+
+// Print statistics
+void print_stats(const search_stats_t *stats, const char *impl_name) {
+    printf("\nStatistics for %s (%ld iterations):\n", impl_name, stats->iterations);
+    printf("  Min time:     %.3f ms\n", stats->min);
+    printf("  Max time:     %.3f ms\n", stats->max);
+    printf("  Avg time:     %.3f ms\n", stats->avg);
+    printf("  Median time:  %.3f ms\n", stats->median);
+    printf("  90th %%tile:   %.3f ms\n", stats->p90);
+    printf("  95th %%tile:   %.3f ms\n", stats->p95);
+    printf("  Std Dev:      %.3f ms\n", stats->std_dev);
+}
+
+// Function to run a single search iteration and measure time
+int run_iteration(int implementation, const char *filepath, uint64_t target, int num_threads, int drop_caches, double *duration) {
+    int ret = 0;
+    uint64_t start_time, end_time;
+    
+    // Drop caches if requested (before timing starts)
+    if (drop_caches) {
+        int status = system("sudo ./drop_caches.sh > /dev/null 2>&1");
+        if (status != 0) {
+            fprintf(stderr, "Failed to drop caches. Make sure drop_caches.sh is executable and you have sudo permissions.\n");
+            return -1;
+        }
+    }
+    
+    // Start timing
+    start_time = get_microseconds();
+    
+    // Run the selected implementation
+    switch (implementation) {
+        case 1:
+            ret = binary_search_uint64_mmap(filepath, target);
+            break;
+        case 2:
+            ret = binary_search_uint64(filepath, target);
+            break;
+        case 3:
+            ret = parallel_binary_search_uint64_mmap(filepath, target, num_threads);
+            break;
+        default:
+            fprintf(stderr, "Invalid implementation\n");
+            return -1;
+    }
+    
+    // End timing
+    end_time = get_microseconds();
+    
+    // Calculate duration in milliseconds
+    *duration = (end_time - start_time) / 1000.0;
+    
+    return ret;
 }
 
 int main(int argc, char *argv[]) {
@@ -32,12 +87,13 @@ int main(int argc, char *argv[]) {
     int drop_caches = 0;
     size_t test_size = 1000000;
     uint64_t test_step = 10;
+    uint64_t iterations = 1;  // Default to 1 iteration
     int opt;
     const char *filepath = NULL;
     uint64_t target = 0;
-
+    
     // Parse command-line options
-    while ((opt = getopt(argc, argv, "i:t:cs:p:d")) != -1) {
+    while ((opt = getopt(argc, argv, "i:t:cs:p:dn:")) != -1) {
         switch (opt) {
             case 'i':
                 implementation = atoi(optarg);
@@ -68,6 +124,13 @@ int main(int argc, char *argv[]) {
                 break;
             case 'd':
                 drop_caches = 1;
+                break;
+            case 'n':
+                iterations = strtoull(optarg, NULL, 10);
+                if (iterations == 0) {
+                    fprintf(stderr, "Number of iterations must be positive\n");
+                    print_usage(argv[0]);
+                }
                 break;
             default:
                 print_usage(argv[0]);
@@ -103,31 +166,87 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
     }
-
-    // Drop caches if requested
-    if (drop_caches) {
-        printf("Dropping caches (requires sudo)...\n");
-        int status = system("sudo ./drop_caches.sh");
-        if (status != 0) {
-            fprintf(stderr, "Failed to drop caches. Make sure drop_caches.sh is executable and you have sudo permissions.\n");
-            return EXIT_FAILURE;
-        }
-        printf("Caches dropped successfully.\n");
-    }
-
-    // Run the selected implementation
+    
+    // Print information about the run
+    printf("Running search with the following parameters:\n");
+    printf("  Implementation: ");
     switch (implementation) {
-        case 1:
-            printf("Running simple mmap implementation...\n");
-            return binary_search_uint64_mmap(filepath, target);
-        case 2:
-            printf("Running IO_uring implementation...\n");
-            return binary_search_uint64(filepath, target);
-        case 3:
-            printf("Running parallel mmap implementation with %d threads...\n", num_threads);
-            return parallel_binary_search_uint64_mmap(filepath, target, num_threads);
-        default:
-            fprintf(stderr, "Invalid implementation\n");
-            return EXIT_FAILURE;
+        case 1: 
+            printf("Simple mmap\n"); 
+            break;
+        case 2: 
+            printf("IO_uring\n"); 
+            break;
+        case 3: 
+            printf("Parallel mmap with %d threads\n", num_threads); 
+            break;
     }
+    printf("  File: %s\n", filepath);
+    printf("  Target value: %" PRIu64 "\n", target);
+    printf("  Iterations: %" PRIu64 "\n", iterations);
+    printf("  Drop caches: %s\n", drop_caches ? "Yes" : "No");
+    
+    // Allocate memory for storing durations
+    double *durations = (double *)malloc(iterations * sizeof(double));
+    if (!durations) {
+        perror("malloc");
+        return EXIT_FAILURE;
+    }
+    
+    // Show initial drop cache message if needed
+    if (drop_caches) {
+        printf("Dropping caches before each iteration (requires sudo)...\n");
+    }
+    
+    // Run iterations
+    int ret = 0;
+    printf("Running %ld iterations...\n", iterations);
+    
+    for (uint64_t i = 0; i < iterations; i++) {
+        // Show progress every 10% of iterations
+        if (iterations > 10 && i % (iterations / 10) == 0) {
+            printf("  Progress: %ld%%\n", (i * 100) / iterations);
+        }
+        
+        // Run a single iteration
+        double duration;
+        int iter_ret = run_iteration(implementation, filepath, target, num_threads, drop_caches, &duration);
+        
+        // Store the duration
+        durations[i] = duration;
+        
+        // If there's an error, report it and exit
+        if (iter_ret < 0) {
+            ret = iter_ret;
+            break;
+        }
+    }
+    
+    // Calculate and print statistics
+    if (ret >= 0) {
+        search_stats_t stats;
+        calculate_stats(durations, iterations, &stats);
+        
+        // Get implementation name for stats display
+        const char *impl_name;
+        switch (implementation) {
+            case 1: impl_name = "Simple mmap"; break;
+            case 2: impl_name = "IO_uring"; break;
+            case 3: 
+                {
+                    char buffer[50];
+                    snprintf(buffer, sizeof(buffer), "Parallel mmap (%d threads)", num_threads);
+                    impl_name = buffer;
+                }
+                break;
+            default: impl_name = "Unknown implementation"; break;
+        }
+        
+        print_stats(&stats, impl_name);
+    }
+    
+    // Clean up
+    free(durations);
+    
+    return ret;
 }
