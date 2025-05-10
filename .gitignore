@@ -5,5 +5,6 @@ CMakeFiles
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+parallel_binary_search
 
 **/.claude/settings.local.json
