@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.31)
+cmake_minimum_required(VERSION 3.16)
 project(parallel_binary_search C)
 
 set(CMAKE_C_STANDARD 11)
@@ -17,19 +17,19 @@ endif()
 # Include directories
 include_directories(${LIBURING_INCLUDE_DIR})
 
-# Create executable
-add_executable(parallel_binary_search main_iouring.c
-        main_mmap.c.bak
-        main_parallel_mmap.c.bak)
+# Create executable with all new implementation files
+add_executable(parallel_binary_search
+    launcher.c
+    common.c
+    mmap_search.c
+    iouring_search.c
+    parallel_mmap_search.c)
 
-# Link against liburing
-target_link_libraries(parallel_binary_search ${LIBURING_LIBRARY})
+# Link against liburing and pthread
+target_link_libraries(parallel_binary_search ${LIBURING_LIBRARY} pthread m)
 
 # Add inttypes.h support for PRIu64 macro
 target_compile_definitions(parallel_binary_search PRIVATE __STDC_FORMAT_MACROS)
-
-# Add missing header include in the source
-set_source_files_properties(main_iouring.c PROPERTIES COMPILE_FLAGS "-include inttypes.h")
 
 # Output compiler flags for debugging
 message(STATUS "LIBURING_INCLUDE_DIR: ${LIBURING_INCLUDE_DIR}")

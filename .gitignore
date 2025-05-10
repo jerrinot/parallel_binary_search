@@ -1,2 +1,5 @@
 .idea
-cmake-build-debug/
+cmake-build-*
+ts.d
+
+**/.claude/settings.local.json

@@ -1,3 +1,4 @@
+#include "bssearch_lib.h"
 #include <liburing.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +9,6 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <inttypes.h>
-#include <sys/time.h>
 
 #define QUEUE_DEPTH 256       // How many operations we can queue at once
 #define PARALLEL_READS 64     // Number of speculative reads to perform
@@ -20,13 +20,6 @@ typedef struct {
     int index;              // Which search position this represents
     int valid;              // Whether a valid value was read
 } read_data;
-
-// Function to get current time in microseconds
-uint64_t get_microseconds() {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
-}
 
 // Binary search for a target uint64_t in a file of sorted uint64_t values
 int binary_search_uint64(const char *filepath, uint64_t target) {
@@ -287,59 +280,4 @@ cleanup:
     printf("  Total bytes read: %zu\n", total_reads * sizeof(uint64_t));
 
     return found ? 0 : -1;
-}
-
-// Function to create a test file with sorted uint64_t values
-int create_test_file(const char *filepath, size_t num_elements, uint64_t step) {
-    FILE *file = fopen(filepath, "wb");
-    if (!file) {
-        perror("fopen");
-        return -1;
-    }
-    
-    printf("Creating test file with %zu elements...\n", num_elements);
-    
-    for (uint64_t i = 0; i < num_elements; i++) {
-        uint64_t value = i * step;
-        if (fwrite(&value, sizeof(uint64_t), 1, file) != 1) {
-            perror("fwrite");
-            fclose(file);
-            return -1;
-        }
-    }
-    
-    fclose(file);
-    printf("Test file created successfully: %s\n", filepath);
-    return 0;
-}
-
-int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s <filepath> <target_uint64> [create_test size step]\n", argv[0]);
-        fprintf(stderr, "  create_test: If 'create_test' is specified, a test file will be created\n");
-        fprintf(stderr, "  size: Number of elements in the test file (default: 1000000)\n");
-        fprintf(stderr, "  step: Step between consecutive values (default: 10)\n");
-        return 1;
-    }
-    
-    const char *filepath = argv[1];
-    uint64_t target = strtoull(argv[2], NULL, 10);
-    
-    // Check for conversion errors
-    if (errno == ERANGE) {
-        perror("strtoull");
-        return 1;
-    }
-    
-    // Check if we should create a test file
-    if (argc >= 4 && strcmp(argv[3], "create_test") == 0) {
-        size_t size = (argc >= 5) ? strtoull(argv[4], NULL, 10) : 1000000;
-        uint64_t step = (argc >= 6) ? strtoull(argv[5], NULL, 10) : 10;
-        
-        if (create_test_file(filepath, size, step) != 0) {
-            return 1;
-        }
-    }
-    
-    return binary_search_uint64(filepath, target);
 }

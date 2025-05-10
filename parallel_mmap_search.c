@@ -1,3 +1,4 @@
+#include "bssearch_lib.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -8,8 +9,6 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <errno.h>
-#include <time.h>
-#include <sys/time.h>
 #include <math.h>
 #include <pthread.h>
 
@@ -23,13 +22,6 @@ typedef struct {
     size_t found_idx;
     int num_comparisons;
 } search_thread_data_t;
-
-// Function to get current time in microseconds
-uint64_t get_microseconds() {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
-}
 
 // Thread function for parallel binary search
 void* binary_search_thread(void *arg) {
@@ -206,64 +198,4 @@ int parallel_binary_search_uint64_mmap(const char *filepath, uint64_t target, in
     printf("  Total comparisons performed: %d\n", total_comparisons);
 
     return found ? 0 : -1;
-}
-
-// Function to create a test file with sorted uint64_t values
-int create_test_file(const char *filepath, size_t num_elements, uint64_t step) {
-    FILE *file = fopen(filepath, "wb");
-    if (!file) {
-        perror("fopen");
-        return -1;
-    }
-    
-    printf("Creating test file with %zu elements...\n", num_elements);
-    
-    for (uint64_t i = 0; i < num_elements; i++) {
-        uint64_t value = i * step;
-        if (fwrite(&value, sizeof(uint64_t), 1, file) != 1) {
-            perror("fwrite");
-            fclose(file);
-            return -1;
-        }
-    }
-    
-    fclose(file);
-    printf("Test file created successfully: %s\n", filepath);
-    return 0;
-}
-
-int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s <filepath> <target_uint64> [num_threads] [create_test size step]\n", argv[0]);
-        fprintf(stderr, "  num_threads: Number of threads to use (default: 4)\n");
-        fprintf(stderr, "  create_test: If 'create_test' is specified, a test file will be created\n");
-        fprintf(stderr, "  size: Number of elements in the test file (default: 1000000)\n");
-        fprintf(stderr, "  step: Step between consecutive values (default: 10)\n");
-        return 1;
-    }
-    
-    const char *filepath = argv[1];
-    uint64_t target = strtoull(argv[2], NULL, 10);
-    int num_threads = (argc >= 4 && strcmp(argv[3], "create_test") != 0) ? atoi(argv[3]) : 32;
-    
-    // Check for conversion errors
-    if (errno == ERANGE) {
-        perror("strtoull");
-        return 1;
-    }
-    
-    // Check if we should create a test file
-    if ((argc >= 4 && strcmp(argv[3], "create_test") == 0) || 
-        (argc >= 5 && strcmp(argv[4], "create_test") == 0)) {
-        
-        int arg_offset = (strcmp(argv[3], "create_test") == 0) ? 3 : 4;
-        size_t size = (argc >= arg_offset + 2) ? strtoull(argv[arg_offset + 1], NULL, 10) : 1000000;
-        uint64_t step = (argc >= arg_offset + 3) ? strtoull(argv[arg_offset + 2], NULL, 10) : 10;
-        
-        if (create_test_file(filepath, size, step) != 0) {
-            return 1;
-        }
-    }
-    
-    return parallel_binary_search_uint64_mmap(filepath, target, num_threads);
 }
