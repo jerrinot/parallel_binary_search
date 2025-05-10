@@ -78,12 +78,30 @@ int binary_search_uint64(const char *filepath, uint64_t target) {
     off_t lo = 0;
     off_t hi = num_elements - 1;
     
-    // Initialize io_uring
-    ret = io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+    // Initialize io_uring with SQPOLL flag for kernel thread polling
+    struct io_uring_params params = {0};
+    params.flags = IORING_SETUP_SQPOLL;  // Use kernel polling thread to avoid syscalls
+    params.sq_thread_idle = 2000;        // Thread idles for 2 seconds before going to sleep
+    int sqpoll_enabled = 0;
+
+    // First try with SQPOLL
+    ret = io_uring_queue_init_params(QUEUE_DEPTH, &ring, &params);
     if (ret < 0) {
-        perror("io_uring_queue_init");
-        close(fd);
-        return -1;
+        int saved_errno = errno;
+        printf("Note: SQPOLL io_uring mode requires root privileges (error %d: %s)\n",
+               saved_errno, strerror(saved_errno));
+        printf("Falling back to standard IO_uring mode...\n");
+
+        // Fall back to standard mode
+        ret = io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+        if (ret < 0) {
+            perror("io_uring_queue_init");
+            close(fd);
+            return -1;
+        }
+    } else {
+        sqpoll_enabled = 1;
+        printf("SQPOLL io_uring mode enabled (kernel polling)\n");
     }
     
     // Allocate memory for read buffers
@@ -284,6 +302,7 @@ cleanup:
     printf("  Total reads performed: %d\n", total_reads);
     printf("  Average time per read: %.3f ms\n", elapsed_ms / total_reads);
     printf("  Total bytes read: %zu\n", total_reads * sizeof(uint64_t));
+    printf("  IO_uring mode: %s\n", sqpoll_enabled ? "SQPOLL (kernel polling)" : "Standard");
 
     return found ? 0 : -1;
 }
